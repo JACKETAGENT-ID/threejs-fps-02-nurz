@@ -1,0 +1,562 @@
+// NEON DOCKS — boot and the one loop: a fixed 60 Hz simulation feeding a render at
+// the display's rate. ?shot=start|play|bomb|end with &seed=N sets up a deterministic
+// frame for a capture, renders it twice, then freezes it and sets window.__shotReady.
+import * as THREE from 'three';
+import { PALETTE } from './palette.js';
+import { createMap } from './map.js';
+import { createInput } from './input.js';
+import { createPlayer } from './player.js';
+import { createWeapons, WEAPONS, GRENADE_PRICE, ARMOR_PRICE } from './weapons.js';
+import { createBots } from './bots.js';
+import { createRounds, BUY_SECONDS, ROUND_SECONDS } from './rounds.js';
+import { createHud } from './hud.js';
+import { createAudio } from './audio.js';
+
+const FIXED_STEP = 1 / 60;
+const params = new URLSearchParams(window.location.search);
+const shot = params.get('shot');
+const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
+
+function mulberry32(initial) {
+  let a = initial;
+  return function random() {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const random = mulberry32(seed);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('game').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PALETTE.night);
+scene.fog = new THREE.Fog(new THREE.Color(PALETTE.night), 26, 68);
+const camera = new THREE.PerspectiveCamera(74, window.innerWidth / window.innerHeight, 0.05, 160);
+scene.add(camera);
+
+const map = createMap(scene);
+const hud = createHud();
+const audio = createAudio();
+const rounds = createRounds();
+const weapons = createWeapons(camera);
+const bots = createBots(scene, map);
+const player = createPlayer(map.colliders, map.spawns.crew[0]);
+const input = createInput(renderer.domElement, onLockChange);
+const raycaster = new THREE.Raycaster();
+raycaster.far = 90;
+
+const body = player.state;
+let health = 100;
+let playerAlive = true;
+let started = false;
+let frozen = false;
+let elapsed = 0;
+let accumulator = 0;
+let lastTime = performance.now();
+let prevFiring = false;
+let buyOpen = false;
+let bombMesh = null;
+let bombLight = null;
+const grenades = [];
+const direction = new THREE.Vector3();
+const grenadeGeo = new THREE.SphereGeometry(0.09, 10, 8);
+const grenadeMat = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.olive), roughness: 0.6, metalness: 0.4 });
+
+function syncCamera() {
+  camera.position.set(body.position.x, body.position.y + body.eye, body.position.z);
+  camera.rotation.set(body.pitch, body.yaw, 0, 'YXZ');
+}
+
+function aimAt(point) {
+  const dx = point.x - body.position.x;
+  const dy = point.y - (body.position.y + body.eye);
+  const dz = point.z - body.position.z;
+  const length = Math.hypot(dx, dy, dz) || 1;
+  body.yaw = Math.atan2(-dx, -dz);
+  body.pitch = Math.asin(Math.max(-1, Math.min(1, dy / length)));
+  syncCamera();
+}
+
+function resetRound() {
+  health = 100;
+  playerAlive = true;
+  player.reset(map.spawns.crew[0]);
+  weapons.refillAmmo();
+  weapons.select('pistol');
+  bots.reset();
+  for (const grenade of grenades) scene.remove(grenade.mesh);
+  grenades.length = 0;
+  clearBombMesh();
+  buyOpen = true;
+  hud.showBuy(true, rounds.state.money, weapons.state.owned.rifle, weapons.state.grenades);
+  hud.setBomb('');
+  hud.setPlant(null);
+}
+
+function startMatch() {
+  rounds.startMatch();
+  resetRound();
+  hud.setScore(0, 0, 1);
+  hud.banner('NEON DOCKS', 'First to 5 rounds — plant the charge or drop the shift');
+}
+
+function clearBombMesh() {
+  if (bombMesh) {
+    scene.remove(bombMesh);
+    bombMesh = null;
+  }
+  if (bombLight) {
+    scene.remove(bombLight);
+    bombLight = null;
+  }
+}
+
+function placeBombMesh(siteKey) {
+  clearBombMesh();
+  const site = map.sites[siteKey];
+  bombMesh = new THREE.Group();
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.42, 0.26, 0.3),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.danger), roughness: 0.5, metalness: 0.3 }),
+  );
+  box.position.y = 0.13;
+  box.castShadow = true;
+  bombMesh.add(box);
+  const lamp = new THREE.Mesh(
+    new THREE.SphereGeometry(0.05, 8, 6),
+    new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.danger), toneMapped: false }),
+  );
+  lamp.position.y = 0.32;
+  bombMesh.add(lamp);
+  bombMesh.position.copy(site.center);
+  scene.add(bombMesh);
+  bombLight = new THREE.PointLight(new THREE.Color(PALETTE.danger), 8, 9, 1.6);
+  bombLight.position.set(site.center.x, 1.2, site.center.z);
+  scene.add(bombLight);
+}
+
+function damagePlayer(amount, fromBot) {
+  if (!playerAlive) return;
+  const absorbed = Math.min(weapons.state.armor, amount * 0.5);
+  weapons.state.armor -= absorbed;
+  health -= amount - absorbed;
+  hud.damageFlash();
+  audio.hurt();
+  if (health <= 0) {
+    health = 0;
+    playerAlive = false;
+    hud.feed(`You were dropped by ${fromBot ? fromBot.name : 'the shift'}`, 'bad');
+    if (document.pointerLockElement) document.exitPointerLock();
+    checkRoundEnd();
+  }
+}
+
+function shoot(spread) {
+  if (!weapons.takeRound()) {
+    audio.dryClick();
+    return false;
+  }
+  const def = weapons.def();
+  camera.getWorldDirection(direction);
+  direction.x += (random() * 2 - 1) * spread;
+  direction.y += (random() * 2 - 1) * spread;
+  direction.z += (random() * 2 - 1) * spread;
+  direction.normalize();
+  scene.updateMatrixWorld(true);
+  raycaster.set(camera.position, direction);
+  const targets = map.shootables.concat(bots.hitMeshes);
+  const hit = raycaster.intersectObjects(targets, false)[0];
+  if (hit && hit.object.userData.bot) {
+    const bot = hit.object.userData.bot;
+    const isHead = hit.object.userData.part === 'head';
+    const killed = bots.damage(bot, isHead ? def.headDamage : def.damage, hit.object.userData.part);
+    hud.hitMarker(killed, killed ? 4000 : 90);
+    if (killed) {
+      audio.kill();
+      hud.feed(`You dropped ${bot.name} ${isHead ? '(headshot)' : ''}`, 'good');
+      rounds.earn(300);
+      checkRoundEnd();
+    } else {
+      audio.hit();
+    }
+  }
+  weapons.pullTrigger();
+  player.recoil(def.kick + random() * 0.004, (random() * 2 - 1) * 0.004);
+  audio.shot(weapons.state.current);
+  bots.hearNoise(body.position, elapsed);
+  return true;
+}
+
+function throwGrenade() {
+  if (!weapons.throwGrenade()) return;
+  camera.getWorldDirection(direction);
+  const mesh = new THREE.Mesh(grenadeGeo, grenadeMat);
+  mesh.position.copy(camera.position).addScaledVector(direction, 0.4);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  grenades.push({
+    mesh,
+    velocity: direction.clone().multiplyScalar(15).add(new THREE.Vector3(0, 4.5, 0)),
+    fuse: 1.6,
+  });
+  audio.shot('rifle');
+}
+
+function explodeGrenade(grenade) {
+  scene.remove(grenade.mesh);
+  const center = grenade.mesh.position;
+  const kills = bots.damageInRadius(center, 6, 90);
+  if (kills > 0) {
+    rounds.earn(300 * kills);
+    hud.feed(`Frag took ${kills} guard${kills > 1 ? 's' : ''}`, 'good');
+  }
+  const distToPlayer = center.distanceTo(body.position);
+  if (playerAlive && distToPlayer < 6) {
+    damagePlayer(55 * (1 - distToPlayer / 7), null);
+  }
+  const flash = new THREE.PointLight(new THREE.Color(PALETTE.sodium), 60, 18, 1.5);
+  flash.position.copy(center).setY(center.y + 0.5);
+  scene.add(flash);
+  setTimeout(() => scene.remove(flash), 160);
+  audio.explosion();
+  bots.hearNoise(center, elapsed);
+  checkRoundEnd();
+}
+
+const botEnv = {
+  playerPos: body.position,
+  playerEye: 1.6,
+  playerAlive: true,
+  bomb: rounds.state.bomb,
+  time: 0,
+  rng: random,
+  damagePlayer,
+  onKill(killer, victim) {
+    hud.feed(`${killer.name} dropped ${victim.name}`, 'bad');
+  },
+  onBotShot() { audio.enemyShot(); },
+  onDefuse(progress) {
+    rounds.setDefuse(progress);
+  },
+  onDefused(bot) {
+    clearBombMesh();
+    rounds.endRound('shift', `${bot.name} defused the charge.`);
+  },
+};
+
+function checkRoundEnd() {
+  if (rounds.state.phase !== 'live') return;
+  if (bots.aliveCount('shift') === 0) {
+    rounds.endRound('crew', 'All five guards are down.');
+  } else if (!playerAlive && bots.aliveCount('crew') === 0) {
+    rounds.endRound('shift', 'The crew is wiped out.');
+  }
+}
+
+const grenadeProbe = new THREE.Box3();
+function stepGrenades(dt) {
+  for (let i = grenades.length - 1; i >= 0; i -= 1) {
+    const grenade = grenades[i];
+    grenade.fuse -= dt;
+    grenade.velocity.y -= 12 * dt;
+    const next = grenade.mesh.position.clone().addScaledVector(grenade.velocity, dt);
+    grenadeProbe.min.set(next.x - 0.09, next.y - 0.09, next.z - 0.09);
+    grenadeProbe.max.set(next.x + 0.09, next.y + 0.09, next.z + 0.09);
+    const hitsWall = map.colliders.some((box) => grenadeProbe.intersectsBox(box));
+    if (hitsWall) {
+      grenade.velocity.multiplyScalar(-0.35);
+      grenade.velocity.y = Math.abs(grenade.velocity.y) * 0.4 + 1;
+    } else {
+      grenade.mesh.position.copy(next);
+    }
+    if (grenade.mesh.position.y < 0.09) {
+      grenade.mesh.position.y = 0.09;
+      grenade.velocity.y = Math.abs(grenade.velocity.y) * 0.4;
+      grenade.velocity.x *= 0.7;
+      grenade.velocity.z *= 0.7;
+    }
+    if (grenade.fuse <= 0) {
+      grenades.splice(i, 1);
+      explodeGrenade(grenade);
+    }
+  }
+}
+
+function handleBuyKeys() {
+  if (!buyOpen || rounds.state.phase !== 'buy') return;
+  const money = rounds.state;
+  if (input.consume('Digit1') && !weapons.state.owned.rifle) {
+    if (rounds.spend(WEAPONS.rifle.price)) {
+      weapons.grant('rifle');
+      weapons.select('rifle');
+      audio.buy();
+    }
+  } else if (input.consume('Digit2')) {
+    if (rounds.spend(200)) {
+      weapons.refillAmmo();
+      audio.buy();
+    }
+  } else if (input.consume('Digit3')) {
+    if (rounds.spend(GRENADE_PRICE)) {
+      weapons.grant('grenade');
+      audio.buy();
+    }
+  } else if (input.consume('Digit4') && weapons.state.armor < 100) {
+    if (rounds.spend(ARMOR_PRICE)) {
+      weapons.grant('armor');
+      audio.buy();
+    }
+  }
+  hud.showBuy(true, money.money, weapons.state.owned.rifle, weapons.state.grenades);
+}
+
+function step(dt) {
+  elapsed += dt;
+  const phase = rounds.state.phase;
+  if (phase === 'buy' || phase === 'live') {
+    if (playerAlive) player.step(dt, input.state.keys);
+    weapons.step(dt);
+    botEnv.playerAlive = playerAlive;
+    botEnv.playerEye = body.eye;
+    botEnv.time = elapsed;
+    bots.step(dt, botEnv);
+    stepGrenades(dt);
+
+    // Planting: hold E inside a site.
+    let inSite = null;
+    for (const [key, site] of Object.entries(map.sites)) {
+      const dx = body.position.x - site.center.x;
+      const dz = body.position.z - site.center.z;
+      if (Math.hypot(dx, dz) < site.radius) inSite = key;
+    }
+    if (phase === 'live' && playerAlive && inSite && input.state.keys.has('KeyE')) {
+      const planted = rounds.plantTick(dt, inSite, body.position);
+      hud.setPlant(rounds.state.bomb.plantProgress / 3);
+      if (planted) {
+        placeBombMesh(inSite);
+        audio.plant();
+        hud.banner('CHARGE PLANTED', `Site ${inSite} — 40 seconds to detonation`);
+        hud.feed('You planted the charge', 'good');
+      }
+    } else {
+      rounds.plantReset();
+      hud.setPlant(null);
+    }
+
+    const event = rounds.tick(dt);
+    if (event === 'beep') audio.beep();
+    if (phase === 'buy' && rounds.state.phase === 'live') {
+      buyOpen = false;
+      hud.showBuy(false, 0, false, 0);
+      hud.banner(`ROUND ${rounds.state.round}`, 'Plant the charge or drop the shift');
+    }
+    if (phase === 'live' && !rounds.state.bomb.planted && rounds.state.phaseLeft <= 0) {
+      rounds.endRound('shift', 'Time expired — the charge was never planted.');
+    }
+  }
+
+  // Phase transitions: overlays, sounds, pointer release.
+  if (rounds.state.phase === 'ended' && phase !== 'ended') {
+    const reason = rounds.state.endReason;
+    if (reason.includes('detonat')) {
+      audio.explosion();
+      const flash = new THREE.PointLight(new THREE.Color(PALETTE.sodium), 80, 30, 1.4);
+      flash.position.set(rounds.state.bomb.position.x, 2, rounds.state.bomb.position.z);
+      scene.add(flash);
+      setTimeout(() => scene.remove(flash), 300);
+    }
+    clearBombMesh();
+    if (rounds.state.endWinner === 'crew') audio.roundWin();
+    else audio.roundLose();
+    hud.showOverlay('round', { winner: rounds.state.endWinner, reason });
+    if (document.pointerLockElement) document.exitPointerLock();
+  } else if (rounds.state.phase === 'match' && phase !== 'match') {
+    if (rounds.state.matchWinner === 'crew') audio.roundWin();
+    else audio.roundLose();
+    hud.showOverlay('match', {
+      winner: rounds.state.matchWinner,
+      crew: rounds.state.score.crew,
+      shift: rounds.state.score.shift,
+    });
+    if (document.pointerLockElement) document.exitPointerLock();
+  }
+
+  // One-shot keys, drained every fixed step.
+  if (input.consume('KeyR')) weapons.reload();
+  if (input.consume('KeyG') && phase === 'live' && playerAlive) throwGrenade();
+  if (input.consume('KeyB') && rounds.state.phase === 'buy') {
+    buyOpen = !buyOpen;
+    hud.showBuy(buyOpen, rounds.state.money, weapons.state.owned.rifle, weapons.state.grenades);
+  }
+  if (!buyOpen) {
+    if (input.consume('Digit1')) weapons.select('pistol');
+    if (input.consume('Digit2')) weapons.select('rifle');
+  }
+  handleBuyKeys();
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+  if (!frozen) {
+    const look = input.takeLook();
+    player.look(look.x, look.y);
+    const phase = rounds.state.phase;
+    if ((phase === 'buy' || phase === 'live') && playerAlive) {
+      const firing = input.state.firing;
+      const def = weapons.def();
+      const wantFire = def.auto ? firing : firing && !prevFiring;
+      if (wantFire && weapons.ready()) shoot(shot ? 0 : weapons.spread(player.groundSpeed()));
+      else if (firing && !weapons.ready() && weapons.state.mag[weapons.state.current] === 0) weapons.reload();
+      prevFiring = firing;
+    }
+    accumulator += dt;
+    let steps = 0;
+    while (accumulator >= FIXED_STEP && steps < 5) {
+      step(FIXED_STEP);
+      accumulator -= FIXED_STEP;
+      steps += 1;
+    }
+    if (accumulator > FIXED_STEP * 5) accumulator = 0;
+    syncCamera();
+    // HUD refresh (cheap: setText caches by value).
+    const def = weapons.def();
+    hud.setHealth(health, weapons.state.armor);
+    hud.setAmmo(weapons.state.mag[weapons.state.current], weapons.state.reserve[weapons.state.current], def.name.toUpperCase(), weapons.state.grenades);
+    hud.setMoney(rounds.state.money);
+    const bomb = rounds.state.bomb;
+    if (bomb.planted) {
+      hud.setTimer(bomb.detonateLeft, 'live');
+      hud.setBomb(`CHARGE @ SITE ${bomb.site} — DEFUSE ${Math.round(bomb.defuseProgress * 100)}%`);
+    } else {
+      hud.setTimer(rounds.state.phaseLeft, rounds.state.phase);
+      hud.setBomb('');
+    }
+    hud.setScore(rounds.state.score.crew, rounds.state.score.shift, rounds.state.round);
+    hud.crosshairSpread(4 + weapons.spread(player.groundSpeed()) * 260);
+  }
+  renderer.render(scene, camera);
+}
+
+function onLockChange(locked) {
+  if (shot) return;
+  if (locked) {
+    started = true;
+    hud.hideOverlay();
+  } else if (playerAlive && (rounds.state.phase === 'buy' || rounds.state.phase === 'live')) {
+    hud.showOverlay(started ? 'paused' : 'start');
+  }
+}
+
+hud.onPlay(() => {
+  if (shot) return;
+  audio.unlock();
+  const phase = rounds.state.phase;
+  if (phase === 'match') {
+    startMatch();
+  } else if (phase === 'ended') {
+    rounds.nextRound();
+    resetRound();
+  }
+  input.requestLock();
+});
+
+function settle(steps) {
+  for (let index = 0; index < steps; index += 1) step(FIXED_STEP);
+}
+
+function paintTwiceThenReady() {
+  let painted = 0;
+  function paint() {
+    requestAnimationFrame(paint);
+    syncCamera();
+    renderer.render(scene, camera);
+    painted += 1;
+    if (painted === 2) {
+      window.__shotReady = true;
+      frozen = true;
+    }
+  }
+  requestAnimationFrame(paint);
+}
+
+function runShot(name) {
+  hud.hideOverlay();
+  hud.hideBanner();
+  buyOpen = false;
+  hud.showBuy(false, 0, false, 0);
+  body.pitch = 0;
+  body.yaw = 0;
+  if (name === 'start') {
+    body.position.set(0.6, 0, 13.4);
+    settle(20);
+    aimAt(new THREE.Vector3(0, 4.2, -16));
+    hud.showOverlay('start');
+  } else if (name === 'play') {
+    rounds.beginLive();
+    body.position.set(0, 0, 8);
+    settle(20);
+    const guard = bots.bots.find((bot) => bot.team === 'shift');
+    guard.position.set(1.5, 0, -4);
+    guard.yaw = Math.PI;
+    guard.parts.group.position.copy(guard.position);
+    guard.parts.group.rotation.y = guard.yaw;
+    settle(6);
+    aimAt(new THREE.Vector3(guard.position.x, 1.2, guard.position.z));
+    shoot(0);
+    settle(10);
+    aimAt(new THREE.Vector3(guard.position.x, 1.55, guard.position.z));
+    shoot(0);
+    settle(14);
+  } else if (name === 'bomb') {
+    rounds.beginLive();
+    rounds.state.bomb.planted = true;
+    rounds.state.bomb.site = 'A';
+    rounds.state.bomb.detonateLeft = 38;
+    rounds.state.bomb.position = map.sites.A.center.clone();
+    placeBombMesh('A');
+    body.position.set(-18.5, 0, -5.5);
+    settle(20);
+    const guard = bots.bots.find((bot) => bot.team === 'shift');
+    guard.position.set(-18, 0, -11);
+    guard.yaw = Math.atan2(body.position.x + 18, body.position.z + 11);
+    guard.parts.group.position.copy(guard.position);
+    guard.parts.group.rotation.y = guard.yaw;
+    aimAt(new THREE.Vector3(-16, 0.3, -9));
+    settle(6);
+  } else {
+    rounds.endRound('crew', 'All five guards are down.');
+    hud.showOverlay('round', { winner: 'crew', reason: 'All five guards are down.' });
+    body.position.set(0, 0, 10);
+    settle(20);
+    aimAt(new THREE.Vector3(0, 1.4, -8));
+  }
+  hud.setHealth(health, weapons.state.armor);
+  const def = weapons.def();
+  hud.setAmmo(weapons.state.mag[weapons.state.current], weapons.state.reserve[weapons.state.current], def.name.toUpperCase(), weapons.state.grenades);
+  hud.setMoney(rounds.state.money);
+  hud.setScore(rounds.state.score.crew, rounds.state.score.shift, rounds.state.round);
+  hud.setTimer(rounds.state.bomb.planted ? rounds.state.bomb.detonateLeft : rounds.state.phaseLeft, rounds.state.phase);
+  if (rounds.state.bomb.planted) hud.setBomb('CHARGE @ SITE A');
+  paintTwiceThenReady();
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+startMatch();
+syncCamera();
+if (shot) runShot(shot);
+else requestAnimationFrame(frame);
