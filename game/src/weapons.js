@@ -12,9 +12,14 @@ export const WEAPONS = {
     name: 'VK-7 Carbine', price: 2500, mag: 30, reserve: 90, damage: 33, headDamage: 100,
     gap: 0.1, reload: 2.0, auto: true, spreadStill: 0.002, spreadMoving: 0.026, kick: 0.009,
   },
+  dmr: {
+    name: 'K-9 Longshot', price: 3200, mag: 5, reserve: 20, damage: 80, headDamage: 200,
+    gap: 0.55, reload: 2.4, auto: false, spreadStill: 0.001, spreadMoving: 0.04, kick: 0.02,
+  },
 };
 
 export const GRENADE_PRICE = 400;
+export const SMOKE_PRICE = 300;
 export const ARMOR_PRICE = 650;
 
 function buildPistolModel() {
@@ -48,10 +53,31 @@ function buildRifleModel() {
   return group;
 }
 
+function buildDmrModel() {
+  const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color('#232a35'), roughness: 0.5, metalness: 0.5 });
+  const accent = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.neon), roughness: 0.4, metalness: 0.3, emissive: new THREE.Color(PALETTE.neon), emissiveIntensity: 0.3 });
+  const group = new THREE.Group();
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.1, 0.4), dark);
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.035, 0.62), dark);
+  barrel.position.set(0, 0.03, -0.48);
+  const scope = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.22, 10), dark);
+  scope.rotation.x = Math.PI / 2;
+  scope.position.set(0, 0.09, -0.05);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.08, 0.22), dark);
+  stock.position.set(0, -0.02, 0.3);
+  const bipod = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.16, 0.02), accent);
+  bipod.position.set(0.05, -0.08, -0.42);
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.14, 0.07), dark);
+  mag.position.set(0, -0.11, 0);
+  group.add(receiver, barrel, scope, stock, bipod, mag);
+  return group;
+}
+
 export function createWeapons(camera) {
   const models = {
     pistol: buildPistolModel(),
     rifle: buildRifleModel(),
+    dmr: buildDmrModel(),
   };
   for (const [name, model] of Object.entries(models)) {
     model.position.set(0.24, -0.2, -0.42);
@@ -71,10 +97,10 @@ export function createWeapons(camera) {
 
   const state = {
     current: 'pistol',
-    owned: { pistol: true, rifle: false },
-    mag: { pistol: WEAPONS.pistol.mag, rifle: WEAPONS.rifle.mag },
-    reserve: { pistol: WEAPONS.pistol.reserve, rifle: WEAPONS.rifle.reserve },
-    grenades: 0,
+    owned: { pistol: true, rifle: false, dmr: false },
+    mag: { pistol: WEAPONS.pistol.mag, rifle: WEAPONS.rifle.mag, dmr: WEAPONS.dmr.mag },
+    reserve: { pistol: WEAPONS.pistol.reserve, rifle: WEAPONS.rifle.reserve, dmr: WEAPONS.dmr.reserve },
+    grenades: { frag: 0, smoke: 0 },
     armor: 0,
     cooldown: 0,
     reloadLeft: 0,
@@ -137,17 +163,20 @@ export function createWeapons(camera) {
       if (state.reloadLeft > 0 || state.mag[state.current] === def.mag || state.reserve[state.current] === 0) return;
       state.reloadLeft = def.reload;
     },
-    spread(speed) {
+    spread(speed, aiming = false) {
       const def = currentDef();
-      return def.spreadStill + Math.min(1, speed / 5.4) * def.spreadMoving;
+      const base = def.spreadStill + Math.min(1, speed / 5.4) * def.spreadMoving;
+      return aiming ? base * 0.45 : base;
     },
     buy(name) {
       if (name === 'grenade') return GRENADE_PRICE;
+      if (name === 'smoke') return SMOKE_PRICE;
       if (name === 'armor') return ARMOR_PRICE;
       return WEAPONS[name] ? WEAPONS[name].price : -1;
     },
     grant(name) {
-      if (name === 'grenade') state.grenades += 1;
+      if (name === 'grenade') state.grenades.frag += 1;
+      else if (name === 'smoke') state.grenades.smoke += 1;
       else if (name === 'armor') state.armor = 100;
       else if (WEAPONS[name]) {
         state.owned[name] = true;
@@ -155,9 +184,14 @@ export function createWeapons(camera) {
         state.reserve[name] = WEAPONS[name].reserve;
       }
     },
-    throwGrenade() {
-      if (state.grenades <= 0) return false;
-      state.grenades -= 1;
+    throwGrenade(type) {
+      if (type === 'smoke') {
+        if (state.grenades.smoke <= 0) return false;
+        state.grenades.smoke -= 1;
+        return true;
+      }
+      if (state.grenades.frag <= 0) return false;
+      state.grenades.frag -= 1;
       return true;
     },
     refillAmmo() {

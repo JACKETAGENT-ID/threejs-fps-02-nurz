@@ -69,6 +69,11 @@
   #round-num { font-size: 12px; color: var(--muted); letter-spacing: .14em; }
   #money { position: fixed; top: 18px; right: 32px; font-family: var(--font-readout); font-size: 20px; color: var(--sodium); }
 
+  #minimap { position: fixed; top: 56px; right: 32px; width: 148px; height: 148px; border: 1px solid var(--hairline); border-radius: 4px; background: rgba(11,18,32,.85); }
+
+  .dmg-num { position: fixed; transform: translate(-50%, -50%); font-family: var(--font-readout); font-size: 15px; font-weight: 700; color: var(--ink); text-shadow: 0 1px 4px rgba(0,0,0,.9); pointer-events: none; z-index: 5; }
+  .dmg-num.kill { color: var(--danger); font-size: 18px; }
+
   #bomb-status { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 14px; color: var(--danger); letter-spacing: .1em; }
   #plant-bar { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); width: 240px; text-align: center; }
   #plant-bar .track { height: 8px; background: var(--hairline); border-radius: 4px; overflow: hidden; }
@@ -132,6 +137,7 @@
     <span id="timer">1:40</span>
   </div>
   <div id="money">$800</div>
+  <canvas id="minimap" width="148" height="148"></canvas>
   <div id="bomb-status" hidden></div>
   <div id="plant-bar" hidden><div class="track"><div id="plant-fill"></div></div><div id="plant-label">PLANTING…</div></div>
   <div id="feed"></div>
@@ -141,9 +147,11 @@
     <h2>BUY — <span class="buy-money" id="buy-money">$800</span></h2>
     <div class="item" id="buy-rifle"><b>1 · VK-7 Carbine</b><span>$2500</span></div>
     <div class="item"><b>2 · P9 ammo refill</b><span>$200</span></div>
-    <div class="item" id="buy-grenade"><b>3 · Frag grenade — $400 (own 0)</b></div>
+    <div class="item"><b id="buy-grenade">3 · Frag grenade — $400 (own 0)</b></div>
     <div class="item"><b>4 · Kevlar vest</b><span>$650</span></div>
-    <div class="hint">Buy phase only. Press B to close. Rifle: 1 · Ammo: 2 · Grenade: 3 · Armor: 4. Hold E at a site to plant.</div>
+    <div class="item"><b id="buy-smoke">5 · Smoke grenade — $300 (own 0)</b></div>
+    <div class="item" id="buy-dmr"><b>6 · K-9 Longshot DMR</b><span>$3200</span></div>
+    <div class="hint">Buy phase only. Press B to close. Rifle: 1 · Ammo: 2 · Frag: 3 · Armor: 4 · Smoke: 5 · DMR: 6. Hold E at a site to plant. Right-click to aim.</div>
   </div>
 </div>
 
@@ -153,8 +161,8 @@
     <p id="overlay-copy">A night container yard. Plant the charge at CRANE or WAREHOUSE, or drop all five guards. First to 5 rounds takes the match.</p>
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
-      <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move &nbsp; <kbd>Mouse</kbd> Look &nbsp; <kbd>Click</kbd> Fire</li>
-      <li><kbd>R</kbd> Reload &nbsp; <kbd>1</kbd>/<kbd>2</kbd> Weapons &nbsp; <kbd>G</kbd> Throw frag</li>
+      <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move &nbsp; <kbd>Mouse</kbd> Look &nbsp; <kbd>Click</kbd> Fire &nbsp; <kbd>R-Click</kbd> Aim</li>
+      <li><kbd>R</kbd> Reload &nbsp; <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> Weapons &nbsp; <kbd>G</kbd> Throw frag &nbsp; <kbd>H</kbd> Throw smoke</li>
       <li><kbd>E</kbd> Plant / hold at site &nbsp; <kbd>Ctrl</kbd> Crouch &nbsp; <kbd>Space</kbd> Jump</li>
       <li><kbd>B</kbd> Buy menu (buy phase) &nbsp; <kbd>Esc</kbd> Pause</li>
     </ul>

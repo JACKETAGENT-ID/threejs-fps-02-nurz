@@ -140,7 +140,7 @@ export function createMap(scene) {
   group.add(sign);
 
   // Night lighting: cold moon key with shadows, warm sodium fill, dark sky.
-  const moon = new THREE.DirectionalLight(new THREE.Color('#9db8e8'), 1.5);
+  const moon = new THREE.DirectionalLight(new THREE.Color('#9db8e8'), 1.7);
   moon.position.set(-14, 22, 10);
   moon.target.position.set(0, 0, -2);
   moon.castShadow = true;
@@ -152,15 +152,17 @@ export function createMap(scene) {
   moon.shadow.camera.far = 70;
   moon.shadow.bias = -0.0006;
   scene.add(moon, moon.target);
-  const sky = new THREE.HemisphereLight(new THREE.Color('#24344d'), new THREE.Color('#0b1220'), 0.85);
+  const sky = new THREE.HemisphereLight(new THREE.Color('#24344d'), new THREE.Color('#0b1220'), 1.05);
   scene.add(sky);
 
-  // Bomb sites: flat zones the planter must stand inside.
+  // Bomb sites: flat zones the planter must stand inside. A light pillar and a
+  // floating letter mark each site from across the yard, so the objective reads
+  // in a screenshot as well as in play.
   const sites = {
     A: { name: 'CRANE', center: new THREE.Vector3(-16, 0, -9), radius: 3.4 },
     B: { name: 'WAREHOUSE', center: new THREE.Vector3(16, 0, -9), radius: 3.4 },
   };
-  for (const site of Object.values(sites)) {
+  for (const [key, site] of Object.entries(sites)) {
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(site.radius - 0.14, site.radius, 40),
       new THREE.MeshBasicMaterial({ color: new THREE.Color(PALETTE.danger), transparent: true, opacity: 0.5, side: THREE.DoubleSide }),
@@ -168,7 +170,52 @@ export function createMap(scene) {
     ring.rotation.x = -Math.PI / 2;
     ring.position.set(site.center.x, 0.03, site.center.z);
     group.add(ring);
+    const pillar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.5, 11, 12, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(PALETTE.danger), transparent: true, opacity: 0.09,
+        side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+    );
+    pillar.position.set(site.center.x, 5.5, site.center.z);
+    group.add(pillar);
+    const labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 128;
+    labelCanvas.height = 128;
+    const lctx = labelCanvas.getContext('2d');
+    lctx.fillStyle = '#e5484d';
+    lctx.font = 'bold 84px monospace';
+    lctx.textAlign = 'center';
+    lctx.textBaseline = 'middle';
+    lctx.shadowColor = '#e5484d';
+    lctx.shadowBlur = 18;
+    lctx.fillText(key, 64, 68);
+    const labelTexture = new THREE.CanvasTexture(labelCanvas);
+    labelTexture.colorSpace = THREE.SRGBColorSpace;
+    const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture, transparent: true, depthWrite: false }));
+    label.scale.set(1.6, 1.6, 1);
+    label.position.set(site.center.x, 3.6, site.center.z);
+    group.add(label);
   }
+
+  // Stars above the yard: a fixed dome of points, so the night sky is not flat fog.
+  const starCount = 320;
+  const starPositions = new Float32Array(starCount * 3);
+  for (let i = 0; i < starCount; i += 1) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.random() * Math.PI * 0.42;
+    const radius = 70 + Math.random() * 25;
+    starPositions[i * 3] = Math.cos(theta) * Math.sin(phi) * radius;
+    starPositions[i * 3 + 1] = Math.cos(phi) * radius * 0.6 + 6;
+    starPositions[i * 3 + 2] = Math.sin(theta) * Math.sin(phi) * radius;
+  }
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+  const stars = new THREE.Points(starGeometry, new THREE.PointsMaterial({
+    color: new THREE.Color('#cfe0ff'), size: 0.22, sizeAttenuation: true, fog: false,
+    transparent: true, opacity: 0.85,
+  }));
+  scene.add(stars);
 
   // Waypoints: lane junctions the bots walk. links are neighbour indices.
   const waypoints = [
@@ -203,11 +250,24 @@ export function createMap(scene) {
   };
   for (const [index, node] of waypoints.entries()) node.links = links[index];
 
+  // Minimap data, derived from the same colliders the game walks on: every solid
+  // that stands above the ground and below the crane beam, as a top-down rectangle.
+  const minimapRects = colliders
+    .filter((box) => box.min.y < 1 && box.max.y > 0.5 && box.max.y <= 6.5)
+    .map((box) => ({
+      x0: box.min.x, z0: box.min.z, x1: box.max.x, z1: box.max.z, color: '#46587a',
+    }));
+
   return {
     colliders,
     shootables,
     sites,
     waypoints,
+    minimap: {
+      bounds: { x: -24, z: -18, w: 48, h: 36 },
+      rects: minimapRects,
+      sites,
+    },
     spawns: {
       crew: [new THREE.Vector3(0, 0, 13), new THREE.Vector3(-7, 0, 13), new THREE.Vector3(7, 0, 13)],
       shift: [new THREE.Vector3(-6, 0, -13), new THREE.Vector3(0, 0, -13), new THREE.Vector3(6, 0, -13)],

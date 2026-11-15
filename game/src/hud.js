@@ -1,5 +1,7 @@
 // The DOM HUD: health, ammo, money, timer, score, kill feed, buy menu, bomb status and
 // the overlays. It never touches the simulation; main.js pushes numbers in.
+import * as THREE from 'three';
+
 const COPY = {
   start: {
     title: 'NEON DOCKS',
@@ -23,6 +25,10 @@ export function createHud() {
   let hitTimer = 0;
   let bannerTimer = 0;
   let last = {};
+  // Floating damage numbers: a small pool of divs, each pinned to a world point
+  // and projected to the screen every frame while it lives.
+  const damageNums = [];
+  const damageScratch = new THREE.Vector3();
 
   function setText(id, value) {
     if (last[id] === value) return;
@@ -42,7 +48,7 @@ export function createHud() {
       setText('ammo-mag', String(mag));
       setText('ammo-reserve', `/ ${reserve}`);
       setText('weapon-name', weaponName);
-      setText('grenades', `FRAG × ${grenades}`);
+      setText('grenades', `FRAG × ${grenades.frag} · SMOKE × ${grenades.smoke}`);
       $('ammo').classList.toggle('empty', mag === 0);
     },
     setMoney(value) { setText('money', `$${value}`); },
@@ -104,15 +110,53 @@ export function createHud() {
       void damage.offsetWidth;
       damage.classList.add('on');
     },
+    addDamage(position, amount, killed) {
+      let slot = damageNums.find((d) => d.life <= 0);
+      if (!slot) {
+        if (damageNums.length >= 8) return;
+        const el = document.createElement('div');
+        el.className = 'dmg-num';
+        $('hud').appendChild(el);
+        slot = { el, life: 0, position: new THREE.Vector3() };
+        damageNums.push(slot);
+      }
+      slot.position.copy(position);
+      slot.life = 0.8;
+      slot.el.textContent = (killed ? '✕ ' : '') + String(amount);
+      slot.el.classList.toggle('kill', killed);
+      slot.el.style.opacity = '1';
+    },
+    tickDamage(camera, dt) {
+      for (const slot of damageNums) {
+        if (slot.life <= 0) {
+          slot.el.style.opacity = '0';
+          continue;
+        }
+        slot.life -= dt;
+        slot.position.y += dt * 0.5;
+        damageScratch.copy(slot.position).project(camera);
+        if (damageScratch.z > 1) {
+          slot.el.style.opacity = '0';
+          continue;
+        }
+        const x = (damageScratch.x * 0.5 + 0.5) * window.innerWidth;
+        const y = (-damageScratch.y * 0.5 + 0.5) * window.innerHeight;
+        slot.el.style.left = `${x}px`;
+        slot.el.style.top = `${y}px`;
+        slot.el.style.opacity = String(Math.max(0, slot.life / 0.8));
+      }
+    },
     crosshairSpread(px) {
       crosshair.style.setProperty('--gap', `${px}px`);
     },
-    showBuy(open, money, ownedRifle, grenades) {
+    showBuy(open, money, owned, grenades) {
       $('buymenu').hidden = !open;
       if (open) {
         setText('buy-money', `$${money}`);
-        $('buy-rifle').classList.toggle('owned', ownedRifle);
-        $('buy-grenade').textContent = `3 · Frag grenade — $400 (own ${grenades})`;
+        $('buy-rifle').classList.toggle('owned', owned.rifle);
+        $('buy-dmr').classList.toggle('owned', owned.dmr);
+        setText('buy-grenade', `3 · Frag grenade — $400 (own ${grenades.frag})`);
+        setText('buy-smoke', `5 · Smoke grenade — $300 (own ${grenades.smoke})`);
       }
     },
     showOverlay(mode, data = {}) {

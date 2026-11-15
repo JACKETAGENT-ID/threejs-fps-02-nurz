@@ -9,17 +9,24 @@ const BOT_NAMES = {
   crew: ['REEF', 'MARA'],
   shift: ['VOLT', 'JINX', 'ORION', 'PICO', 'SLATE'],
 };
-const BOT_SPEED = 3.4;
 const BOT_RUSH_SPEED = 4.4;
 const BOT_HEALTH = 100;
 const EYE_HEIGHT = 1.55;
 const COMBAT_RANGE = 42;
-const BURST_MIN = 3;
-const BURST_MAX = 5;
-const SHOT_GAP = 0.12;
 const DEFUSE_SECONDS = 5;
 
-function buildBotMesh(scene, team) {
+// Bot archetypes: each role fights differently, so the defence is not five clones.
+// rusher pushes lanes and chases noise; holder sits on angles near the sites;
+// sniper keeps range, fires rare heavy shots, and rarely gives up its perch.
+const ROLES = {
+  rusher: { speed: 4.6, burst: [5, 7], gap: 0.1, dmg: 1.0, spread: 1.0, aimCap: 1.8, hold: [0.4, 1.2] },
+  holder: { speed: 2.6, burst: [3, 4], gap: 0.14, dmg: 1.05, spread: 0.8, aimCap: 2.6, hold: [1.5, 3.5] },
+  sniper: { speed: 2.4, burst: [1, 2], gap: 0.9, dmg: 2.2, spread: 0.35, aimCap: 3.2, hold: [2.0, 4.0] },
+};
+const SHIFT_ROLES = ['rusher', 'holder', 'sniper', 'rusher', 'holder'];
+const CREW_ROLES = ['holder', 'rusher'];
+
+function buildBotMesh(scene, team, role) {
   const group = new THREE.Group();
   const cloth = new THREE.MeshStandardMaterial({ color: new THREE.Color(team === 'crew' ? '#274b4a' : '#4a2727'), roughness: 0.85 });
   const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color('#1c2129'), roughness: 0.7, metalness: 0.2 });
@@ -32,7 +39,9 @@ function buildBotMesh(scene, team) {
   head.position.y = 1.56;
   const strip = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.06, 0.02), visor);
   strip.position.set(0, 1.58, -0.16);
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, 0.62), dark);
+  // Snipers carry a visibly longer rifle; rushers a short one.
+  const gunLength = role === 'sniper' ? 0.98 : role === 'rusher' ? 0.48 : 0.62;
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.09, gunLength), dark);
   gun.position.set(0.24, 1.18, -0.2);
   group.add(legs, torso, head, strip, gun);
   group.traverse((mesh) => {
@@ -69,10 +78,12 @@ export function createBots(scene, map) {
 
   function spawn(team, index) {
     const spawnPoint = map.spawns[team][index % map.spawns[team].length];
-    const parts = buildBotMesh(scene, team);
+    const role = team === 'shift' ? SHIFT_ROLES[index % SHIFT_ROLES.length] : CREW_ROLES[index % CREW_ROLES.length];
+    const parts = buildBotMesh(scene, team, role);
     const bot = {
       team,
       name: BOT_NAMES[team][index % BOT_NAMES[team].length],
+      role,
       position: spawnPoint.clone(),
       velocity: new THREE.Vector3(),
       yaw: team === 'crew' ? Math.PI : 0,
@@ -165,6 +176,28 @@ export function createBots(scene, map) {
     return false;
   }
 
+  // True when the segment from->to passes through any live smoke sphere.
+  function blockedBySmoke(from, to, smokes) {
+    if (!smokes) return false;
+    const abx = to.x - from.x;
+    const aby = to.y - from.y;
+    const abz = to.z - from.z;
+    const lenSq = abx * abx + aby * aby + abz * abz;
+    if (lenSq < 0.0001) return false;
+    for (const smoke of smokes) {
+      const ax = smoke.position.x - from.x;
+      const ay = smoke.position.y - from.y;
+      const az = smoke.position.z - from.z;
+      let t = (ax * abx + ay * aby + az * abz) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const cx = from.x + abx * t - smoke.position.x;
+      const cy = from.y + aby * t - smoke.position.y;
+      const cz = from.z + abz * t - smoke.position.z;
+      if (cx * cx + cy * cy + cz * cz < smoke.radius * smoke.radius) return true;
+    }
+    return false;
+  }
+
   function visibleEnemy(bot, env) {
     // Returns {kind, bot|player, eye, distance} for the closest visible enemy, if any.
     let best = null;
@@ -180,6 +213,8 @@ export function createBots(scene, map) {
       const distance = eye.distanceTo(candidate.eye);
       if (distance > COMBAT_RANGE) continue;
       if (!hasLineOfSight(map.shootables, eye, candidate.eye, raycaster)) continue;
+      // Smoke hides what it covers: no seeing or shooting through a cloud.
+      if (blockedBySmoke(eye, candidate.eye, env.smokes)) continue;
       if (!best || distance < best.distance) best = { ...candidate, distance };
     }
     return best;
@@ -201,24 +236,26 @@ export function createBots(scene, map) {
       const enemy = visibleEnemy(bot, env);
       if (enemy) {
         // Face the enemy and fire in bursts; aim tightens the longer the bot sees them.
+        // Each archetype fires its own way: rushers spray, holders tap, snipers crack.
+        const role = ROLES[bot.role];
         const dx = enemy.eye.x - bot.position.x;
         const dz = enemy.eye.z - bot.position.z;
         bot.yaw = Math.atan2(dx, dz);
-        bot.aimTime = Math.min(2.2, bot.aimTime + dt);
+        bot.aimTime = Math.min(role.aimCap, bot.aimTime + dt);
         bot.shotTimer -= dt;
         if (bot.burstLeft <= 0 && bot.shotTimer <= 0) {
-          bot.burstLeft = BURST_MIN + Math.floor(env.rng() * (BURST_MAX - BURST_MIN + 1));
+          bot.burstLeft = role.burst[0] + Math.floor(env.rng() * (role.burst[1] - role.burst[0] + 1));
           bot.shotTimer = 0.5 + env.rng() * 0.4;
         }
         if (bot.burstLeft > 0 && bot.shotTimer <= 0) {
           bot.burstLeft -= 1;
-          bot.shotTimer = SHOT_GAP;
-          const spread = 0.05 + 0.09 * (1 - bot.aimTime / 2.2) + enemy.distance * 0.0012;
+          bot.shotTimer = role.gap;
+          const spread = (0.05 + 0.09 * (1 - bot.aimTime / role.aimCap) + enemy.distance * 0.0012) * role.spread;
           const hit = env.rng() > spread * 4;
           const muzzle = new THREE.Vector3(bot.position.x, bot.position.y + 1.25, bot.position.z);
           addTracer(muzzle, enemy.eye);
           if (hit) {
-            const damageAmount = 11 + env.rng() * 9;
+            const damageAmount = (11 + env.rng() * 9) * role.dmg;
             if (enemy.kind === 'player') env.damagePlayer(damageAmount, bot);
             else if (damage(enemy.ref, damageAmount, 'torso')) env.onKill(bot, enemy.ref);
           }
@@ -228,11 +265,13 @@ export function createBots(scene, map) {
       }
       bot.aimTime = 0;
 
-      // No enemy in sight: follow the plan.
+      // No enemy in sight: follow the plan. Snipers keep their perch unless the
+      // bomb forces a move; rushers close on noise at full pace.
       if (bot.holdLeft > 0) {
         bot.holdLeft -= dt;
         continue;
       }
+      const role = ROLES[bot.role];
       let goal = bot.targetNode;
       if (env.bomb.planted && bot.team === 'shift') {
         goal = env.bomb.site === 'A' ? 14 : 15;
@@ -245,7 +284,14 @@ export function createBots(scene, map) {
       if (bot.suspicion && env.time < bot.suspicionUntil && !env.bomb.planted) {
         goal = nearestNode(bot.suspicion.x, bot.suspicion.z);
       }
-      const arrived = stepTowardNode(bot, goal, dt, env.bomb.planted ? BOT_RUSH_SPEED : BOT_SPEED);
+      if (bot.role === 'sniper' && !env.bomb.planted && !bot.suspicion) {
+        // Hold the angle: scan instead of walking the route.
+        bot.holdLeft = role.hold[0] + env.rng() * (role.hold[1] - role.hold[0]);
+        bot.yaw += (env.rng() - 0.5) * 1.2;
+        continue;
+      }
+      const moveSpeed = env.bomb.planted || bot.suspicion ? Math.max(role.speed, BOT_RUSH_SPEED) : role.speed;
+      const arrived = stepTowardNode(bot, goal, dt, moveSpeed);
       if (arrived) {
         if (env.bomb.planted && bot.team === 'shift') {
           // At the planted site: channel the defuse.
@@ -253,7 +299,7 @@ export function createBots(scene, map) {
           env.onDefuse(bot.defuseLeft / DEFUSE_SECONDS);
           if (bot.defuseLeft >= DEFUSE_SECONDS) env.onDefused(bot);
         } else {
-          bot.holdLeft = 1 + env.rng() * 2.5;
+          bot.holdLeft = role.hold[0] + env.rng() * (role.hold[1] - role.hold[0]);
         }
       }
     }

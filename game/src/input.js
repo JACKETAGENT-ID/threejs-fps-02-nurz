@@ -6,7 +6,7 @@ import * as THREE from 'three';
 export function createInput(canvas, onLockChange) {
   const keys = new Set();
   const pressed = new Set();
-  const state = { keys, locked: false, firing: false, lookX: 0, lookY: 0 };
+  const state = { keys, locked: false, firing: false, aiming: false, lookX: 0, lookY: 0 };
 
   function onKeyDown(event) {
     if (event.repeat) return;
@@ -20,6 +20,7 @@ export function createInput(canvas, onLockChange) {
   window.addEventListener('blur', () => {
     keys.clear();
     state.firing = false;
+    state.aiming = false;
   });
   window.addEventListener('mousemove', (event) => {
     if (!state.locked) return;
@@ -27,16 +28,21 @@ export function createInput(canvas, onLockChange) {
     state.lookY += event.movementY;
   });
   window.addEventListener('mousedown', (event) => {
-    if (state.locked && event.button === 0) state.firing = true;
+    if (!state.locked) return;
+    if (event.button === 0) state.firing = true;
+    if (event.button === 2) state.aiming = true;
   });
   window.addEventListener('mouseup', (event) => {
     if (event.button === 0) state.firing = false;
+    if (event.button === 2) state.aiming = false;
   });
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;
     if (!state.locked) {
       keys.clear();
       state.firing = false;
+      state.aiming = false;
     }
     onLockChange(state.locked);
   });

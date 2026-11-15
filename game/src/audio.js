@@ -55,8 +55,10 @@ export function createAudio() {
     unlock() { ensure(); },
     shot(kind) {
       if (kind === 'rifle') noiseBurst(0.09, 2600, 0.9);
+      else if (kind === 'dmr') noiseBurst(0.14, 1500, 1.0);
       else noiseBurst(0.07, 3200, 0.7);
     },
+    smoke() { noiseBurst(0.5, 900, 0.35); },
     enemyShot() { noiseBurst(0.08, 1600, 0.35); },
     reload() {
       tone(520, 0.06, 'square', 0.12);
