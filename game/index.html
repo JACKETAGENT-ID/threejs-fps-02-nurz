@@ -67,6 +67,7 @@
   #timer.buy { color: var(--sodium); border-color: var(--sodium); }
   #timer.danger { color: var(--danger); border-color: var(--danger); }
   #round-num { font-size: 12px; color: var(--muted); letter-spacing: .14em; }
+  #objective { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 12px; letter-spacing: .18em; color: var(--accent); text-shadow: 0 1px 4px rgba(0,0,0,.9); }
   #money { position: fixed; top: 18px; right: 32px; font-family: var(--font-readout); font-size: 20px; color: var(--sodium); }
 
   #minimap { position: fixed; top: 56px; right: 32px; width: 148px; height: 148px; border: 1px solid var(--hairline); border-radius: 4px; background: rgba(11,18,32,.85); }
@@ -74,7 +75,7 @@
   .dmg-num { position: fixed; transform: translate(-50%, -50%); font-family: var(--font-readout); font-size: 15px; font-weight: 700; color: var(--ink); text-shadow: 0 1px 4px rgba(0,0,0,.9); pointer-events: none; z-index: 5; }
   .dmg-num.kill { color: var(--danger); font-size: 18px; }
 
-  #bomb-status { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 14px; color: var(--danger); letter-spacing: .1em; }
+  #bomb-status { position: fixed; top: 84px; left: 50%; transform: translateX(-50%); font-family: var(--font-readout); font-size: 14px; color: var(--danger); letter-spacing: .1em; }
   #plant-bar { position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); width: 240px; text-align: center; }
   #plant-bar .track { height: 8px; background: var(--hairline); border-radius: 4px; overflow: hidden; }
   #plant-fill { height: 100%; width: 0%; background: var(--sodium); }
@@ -136,6 +137,7 @@
     <span class="score"><b id="score-crew">0</b> : <span id="score-shift">0</span></span>
     <span id="timer">1:40</span>
   </div>
+  <div id="objective">PLANT THE CHARGE AT A OR B</div>
   <div id="money">$800</div>
   <canvas id="minimap" width="148" height="148"></canvas>
   <div id="bomb-status" hidden></div>
@@ -151,7 +153,8 @@
     <div class="item"><b>4 · Kevlar vest</b><span>$650</span></div>
     <div class="item"><b id="buy-smoke">5 · Smoke grenade — $300 (own 0)</b></div>
     <div class="item" id="buy-dmr"><b>6 · K-9 Longshot DMR</b><span>$3200</span></div>
-    <div class="hint">Buy phase only. Press B to close. Rifle: 1 · Ammo: 2 · Frag: 3 · Armor: 4 · Smoke: 5 · DMR: 6. Hold E at a site to plant. Right-click to aim.</div>
+    <div class="item" id="buy-shotgun"><b>7 · M590 Breacher shotgun</b><span>$1800</span></div>
+    <div class="hint">Buy phase only. Press B to close. Rifle: 1 · Ammo: 2 · Frag: 3 · Armor: 4 · Smoke: 5 · DMR: 6 · Shotgun: 7. Hold E at a site to plant. Right-click to aim.</div>
   </div>
 </div>
 
@@ -162,7 +165,7 @@
     <button id="play" type="button">Click to play</button>
     <ul class="keys">
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move &nbsp; <kbd>Mouse</kbd> Look &nbsp; <kbd>Click</kbd> Fire &nbsp; <kbd>R-Click</kbd> Aim</li>
-      <li><kbd>R</kbd> Reload &nbsp; <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd> Weapons &nbsp; <kbd>G</kbd> Throw frag &nbsp; <kbd>H</kbd> Throw smoke</li>
+      <li><kbd>R</kbd> Reload &nbsp; <kbd>1</kbd>/<kbd>2</kbd>/<kbd>3</kbd>/<kbd>4</kbd> Weapons &nbsp; <kbd>G</kbd> Throw frag &nbsp; <kbd>H</kbd> Throw smoke</li>
       <li><kbd>E</kbd> Plant / hold at site &nbsp; <kbd>Ctrl</kbd> Crouch &nbsp; <kbd>Space</kbd> Jump</li>
       <li><kbd>B</kbd> Buy menu (buy phase) &nbsp; <kbd>Esc</kbd> Pause</li>
     </ul>

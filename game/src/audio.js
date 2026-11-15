@@ -56,6 +56,7 @@ export function createAudio() {
     shot(kind) {
       if (kind === 'rifle') noiseBurst(0.09, 2600, 0.9);
       else if (kind === 'dmr') noiseBurst(0.14, 1500, 1.0);
+      else if (kind === 'shotgun') { noiseBurst(0.22, 700, 1.0); tone(90, 0.18, 'sine', 0.4, 45); }
       else noiseBurst(0.07, 3200, 0.7);
     },
     smoke() { noiseBurst(0.5, 900, 0.35); },

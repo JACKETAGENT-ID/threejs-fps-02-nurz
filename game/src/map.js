@@ -217,6 +217,79 @@ export function createMap(scene) {
   }));
   scene.add(stars);
 
+  // Wet puddles under the lamps: near-mirror planes that catch the sodium glow,
+  // so the yard reads wet after the rain instead of flat dark asphalt.
+  const puddleMat = new THREE.MeshStandardMaterial({ color: new THREE.Color('#0d1626'), roughness: 0.06, metalness: 0.85 });
+  const puddleGlowMat = new THREE.MeshBasicMaterial({ color: new THREE.Color('#f5a623'), transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false });
+  for (const lamp of lampSpots) {
+    const puddle = new THREE.Mesh(new THREE.CircleGeometry(1.5, 24), puddleMat);
+    puddle.rotation.x = -Math.PI / 2;
+    puddle.position.set(lamp.x, 0.015, lamp.z);
+    group.add(puddle);
+    const glow = new THREE.Mesh(new THREE.CircleGeometry(0.85, 24), puddleGlowMat);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.set(lamp.x, 0.025, lamp.z);
+    group.add(glow);
+  }
+
+  // Rain: 520 streaks as one LineSegments, positions recycled in place — no new
+  // objects per frame. Drops fall, hit the yard and respawn at the top.
+  const RAIN_DROPS = 520;
+  const RAIN_TOP = 11;
+  const rainPos = new Float32Array(RAIN_DROPS * 6);
+  const rainDrop = new Float32Array(RAIN_DROPS * 4); // x, y, z, speed
+  for (let i = 0; i < RAIN_DROPS; i += 1) {
+    rainDrop[i * 4] = (Math.random() * 2 - 1) * (YARD_X + 2);
+    rainDrop[i * 4 + 1] = Math.random() * RAIN_TOP;
+    rainDrop[i * 4 + 2] = (Math.random() * 2 - 1) * (YARD_Z + 2);
+    rainDrop[i * 4 + 3] = 19 + Math.random() * 7;
+  }
+  const rainGeometry = new THREE.BufferGeometry();
+  rainGeometry.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+  const rain = new THREE.LineSegments(rainGeometry, new THREE.LineBasicMaterial({
+    color: new THREE.Color('#8fa8c8'), transparent: true, opacity: 0.34, fog: false,
+  }));
+  rain.frustumCulled = false;
+  scene.add(rain);
+
+  // Lightning: a distant storm flashes every ~20-35 s, briefly lifting the moon
+  // and sky. flashOnce() fires one immediately (used by the bomb screenshot).
+  let flash = 0;
+  let nextFlashIn = 14 + Math.random() * 10;
+  const moonBase = 1.7;
+  const skyBase = 1.05;
+  function updateWeather(dt) {
+    for (let i = 0; i < RAIN_DROPS; i += 1) {
+      let y = rainDrop[i * 4 + 1] - rainDrop[i * 4 + 3] * dt;
+      if (y < 0) {
+        y = RAIN_TOP + Math.random() * 2;
+        rainDrop[i * 4] = (Math.random() * 2 - 1) * (YARD_X + 2);
+        rainDrop[i * 4 + 2] = (Math.random() * 2 - 1) * (YARD_Z + 2);
+      }
+      rainDrop[i * 4 + 1] = y;
+      const x = rainDrop[i * 4];
+      const z = rainDrop[i * 4 + 2];
+      rainPos[i * 6] = x;
+      rainPos[i * 6 + 1] = y;
+      rainPos[i * 6 + 2] = z;
+      rainPos[i * 6 + 3] = x;
+      rainPos[i * 6 + 4] = y - 0.55;
+      rainPos[i * 6 + 5] = z;
+    }
+    rainGeometry.attributes.position.needsUpdate = true;
+    nextFlashIn -= dt;
+    if (nextFlashIn <= 0) {
+      flash = 1;
+      nextFlashIn = 20 + Math.random() * 15;
+    }
+    if (flash > 0) {
+      flash = Math.max(0, flash - dt * 2.6);
+      moon.intensity = moonBase + flash * 2.4;
+      sky.intensity = skyBase + flash * 1.8;
+      scene.background.setRGB(0.043 + flash * 0.05, 0.07 + flash * 0.07, 0.125 + flash * 0.09);
+    }
+  }
+
   // Waypoints: lane junctions the bots walk. links are neighbour indices.
   const waypoints = [
     { x: 0, z: 13 }, // 0 crew spawn
@@ -263,6 +336,8 @@ export function createMap(scene) {
     shootables,
     sites,
     waypoints,
+    updateWeather,
+    flashOnce() { flash = 1; },
     minimap: {
       bounds: { x: -24, z: -18, w: 48, h: 36 },
       rects: minimapRects,

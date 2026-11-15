@@ -16,7 +16,13 @@ export const WEAPONS = {
     name: 'K-9 Longshot', price: 3200, mag: 5, reserve: 20, damage: 80, headDamage: 200,
     gap: 0.55, reload: 2.4, auto: false, spreadStill: 0.001, spreadMoving: 0.04, kick: 0.02,
   },
+  shotgun: {
+    name: 'M590 Breacher', price: 1800, mag: 6, reserve: 24, damage: 14, headDamage: 28,
+    pellets: 8, gap: 0.85, reload: 2.6, auto: false, spreadStill: 0.026, spreadMoving: 0.05, kick: 0.035,
+  },
 };
+
+export const SHOTGUN_PRICE = 1800;
 
 export const GRENADE_PRICE = 400;
 export const SMOKE_PRICE = 300;
@@ -73,11 +79,32 @@ function buildDmrModel() {
   return group;
 }
 
+function buildShotgunModel() {
+  const dark = new THREE.MeshStandardMaterial({ color: new THREE.Color('#232a35'), roughness: 0.5, metalness: 0.5 });
+  const accent = new THREE.MeshStandardMaterial({ color: new THREE.Color(PALETTE.sodium), roughness: 0.45, metalness: 0.3, emissive: new THREE.Color(PALETTE.sodium), emissiveIntensity: 0.25 });
+  const group = new THREE.Group();
+  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.11, 0.36), dark);
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.5, 10), dark);
+  barrel.rotation.x = Math.PI / 2;
+  barrel.position.set(0, 0.04, -0.42);
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.44, 10), accent);
+  tube.rotation.x = Math.PI / 2;
+  tube.position.set(0, -0.01, -0.4);
+  const pump = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.09, 0.16), dark);
+  pump.position.set(0, -0.01, -0.3);
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.09, 0.22), dark);
+  stock.position.set(0, -0.02, 0.28);
+  group.add(receiver, barrel, tube, pump, stock);
+  group.userData.pump = pump;
+  return group;
+}
+
 export function createWeapons(camera) {
   const models = {
     pistol: buildPistolModel(),
     rifle: buildRifleModel(),
     dmr: buildDmrModel(),
+    shotgun: buildShotgunModel(),
   };
   for (const [name, model] of Object.entries(models)) {
     model.position.set(0.24, -0.2, -0.42);
@@ -97,15 +124,16 @@ export function createWeapons(camera) {
 
   const state = {
     current: 'pistol',
-    owned: { pistol: true, rifle: false, dmr: false },
-    mag: { pistol: WEAPONS.pistol.mag, rifle: WEAPONS.rifle.mag, dmr: WEAPONS.dmr.mag },
-    reserve: { pistol: WEAPONS.pistol.reserve, rifle: WEAPONS.rifle.reserve, dmr: WEAPONS.dmr.reserve },
+    owned: { pistol: true, rifle: false, dmr: false, shotgun: false },
+    mag: { pistol: WEAPONS.pistol.mag, rifle: WEAPONS.rifle.mag, dmr: WEAPONS.dmr.mag, shotgun: WEAPONS.shotgun.mag },
+    reserve: { pistol: WEAPONS.pistol.reserve, rifle: WEAPONS.rifle.reserve, dmr: WEAPONS.dmr.reserve, shotgun: WEAPONS.shotgun.reserve },
     grenades: { frag: 0, smoke: 0 },
     armor: 0,
     cooldown: 0,
     reloadLeft: 0,
     flash: 0,
     kick: 0,
+    pump: 0,
   };
 
   function currentDef() {
@@ -119,6 +147,16 @@ export function createWeapons(camera) {
     const model = models[state.current];
     model.position.z = -0.42 + state.kick;
     model.rotation.x = state.kick * 2.0;
+    // Pump-action: after a shotgun blast the fore-end slides back and forth
+    // over 0.45 s, the visible cost of eight pellets at once.
+    if (state.pump > 0 && model.userData.pump) {
+      state.pump = Math.max(0, state.pump - dt);
+      const pumpPhase = 1 - state.pump / 0.45;
+      const slide = Math.sin(Math.min(1, pumpPhase) * Math.PI) * 0.09;
+      model.userData.pump.position.z = -0.3 + slide;
+    } else if (state.pump > 0) {
+      state.pump = Math.max(0, state.pump - dt);
+    }
     flash.visible = state.flash > 0;
     flash.rotation.z = state.flash * 28;
     flashLight.intensity = state.flash > 0 ? 10 : 0;
@@ -152,6 +190,7 @@ export function createWeapons(camera) {
       state.cooldown = currentDef().gap;
       state.flash = 0.06;
       state.kick = 0.05;
+      if (state.current === 'shotgun') state.pump = 0.45;
     },
     takeRound() {
       if (state.mag[state.current] <= 0) return false;

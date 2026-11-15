@@ -65,6 +65,9 @@ export function createHud() {
       setText('score-shift', String(shift));
       setText('round-num', `ROUND ${round}`);
     },
+    setObjective(text) {
+      setText('objective', text);
+    },
     setBomb(text) {
       setText('bomb-status', text);
       $('bomb-status').hidden = !text;
@@ -155,6 +158,7 @@ export function createHud() {
         setText('buy-money', `$${money}`);
         $('buy-rifle').classList.toggle('owned', owned.rifle);
         $('buy-dmr').classList.toggle('owned', owned.dmr);
+        $('buy-shotgun').classList.toggle('owned', owned.shotgun);
         setText('buy-grenade', `3 · Frag grenade — $400 (own ${grenades.frag})`);
         setText('buy-smoke', `5 · Smoke grenade — $300 (own ${grenades.smoke})`);
       }
@@ -163,7 +167,11 @@ export function createHud() {
       const text = COPY[mode];
       if (mode === 'round') {
         title.textContent = data.winner === 'crew' ? 'ROUND WON' : 'ROUND LOST';
-        copy.textContent = data.reason || '';
+        const earned = data.earned;
+        const recap = earned
+          ? ` Earned $${earned.kills + earned.plant + earned.round} — kills $${earned.kills}, plant $${earned.plant}, round $${earned.round}.`
+          : '';
+        copy.textContent = (data.reason || '') + recap;
       } else if (mode === 'match') {
         title.textContent = data.winner === 'crew' ? 'MATCH WON' : data.winner === 'draw' ? 'MATCH DRAWN' : 'MATCH LOST';
         copy.textContent = `Final score ${data.crew} — ${data.shift}.`;

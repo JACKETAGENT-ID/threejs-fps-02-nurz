@@ -6,7 +6,7 @@ import { PALETTE } from './palette.js';
 import { createMap } from './map.js';
 import { createInput } from './input.js';
 import { createPlayer } from './player.js';
-import { createWeapons, WEAPONS, GRENADE_PRICE, SMOKE_PRICE, ARMOR_PRICE } from './weapons.js';
+import { createWeapons, WEAPONS, GRENADE_PRICE, SMOKE_PRICE, ARMOR_PRICE, SHOTGUN_PRICE } from './weapons.js';
 import { createBots } from './bots.js';
 import { createRounds, BUY_SECONDS, ROUND_SECONDS } from './rounds.js';
 import { createHud } from './hud.js';
@@ -201,32 +201,51 @@ function shoot(spread) {
     return false;
   }
   const def = weapons.def();
-  camera.getWorldDirection(direction);
-  direction.x += (random() * 2 - 1) * spread;
-  direction.y += (random() * 2 - 1) * spread;
-  direction.z += (random() * 2 - 1) * spread;
-  direction.normalize();
-  scene.updateMatrixWorld(true);
-  raycaster.set(camera.position, direction);
-  const targets = map.shootables.concat(bots.hitMeshes);
-  const hit = raycaster.intersectObjects(targets, false)[0];
-  const endPoint = hit ? hit.point : camera.position.clone().addScaledVector(direction, 60);
-  addPlayerTracer(endPoint);
-  if (hit) {
-    spark.position.copy(hit.point);
-    spark.visible = true;
-    sparkLeft = 0.12;
+  // The shotgun fires a cone of pellets: one trigger pull, one ray per pellet,
+  // each pellet its own hit. Total damage is reported as a single number.
+  const pellets = def.pellets || 1;
+  let totalDealt = 0;
+  let killedBot = null;
+  let killedHead = false;
+  for (let p = 0; p < pellets; p += 1) {
+    camera.getWorldDirection(direction);
+    direction.x += (random() * 2 - 1) * spread;
+    direction.y += (random() * 2 - 1) * spread;
+    direction.z += (random() * 2 - 1) * spread;
+    direction.normalize();
+    scene.updateMatrixWorld(true);
+    raycaster.set(camera.position, direction);
+    const targets = map.shootables.concat(bots.hitMeshes);
+    const hit = raycaster.intersectObjects(targets, false)[0];
+    const endPoint = hit ? hit.point : camera.position.clone().addScaledVector(direction, 60);
+    addPlayerTracer(endPoint);
+    if (hit) {
+      spark.position.copy(hit.point);
+      spark.visible = true;
+      sparkLeft = 0.12;
+    }
+    if (hit && hit.object.userData.bot) {
+      const bot = hit.object.userData.bot;
+      if (!bot.alive) continue; // A later pellet of the same blast skips a corpse.
+      const isHead = hit.object.userData.part === 'head';
+      // Pellet falloff past 9 m: the shotgun stays lethal up close and fades
+      // at rifle range, so it never becomes a long-range one-tap.
+      const falloff = hit.distance > 9 ? Math.max(0.45, 1 - (hit.distance - 9) * 0.04) : 1;
+      const dealt = Math.max(1, Math.round((isHead ? def.headDamage : def.damage) * falloff));
+      totalDealt += dealt;
+      const killed = bots.damage(bot, dealt, hit.object.userData.part);
+      if (killed) {
+        killedBot = bot;
+        killedHead = isHead;
+      }
+    }
   }
-  if (hit && hit.object.userData.bot) {
-    const bot = hit.object.userData.bot;
-    const isHead = hit.object.userData.part === 'head';
-    const dealt = isHead ? def.headDamage : def.damage;
-    const killed = bots.damage(bot, dealt, hit.object.userData.part);
-    hud.hitMarker(killed, killed ? 4000 : 90);
-    hud.addDamage(hit.point, dealt, killed);
-    if (killed) {
+  if (totalDealt > 0) {
+    hud.hitMarker(Boolean(killedBot), killedBot ? 4000 : 90);
+    hud.addDamage(killedBot ? killedBot.position.clone().setY(1.4) : camera.position.clone().addScaledVector(direction, 10), totalDealt, Boolean(killedBot));
+    if (killedBot) {
       audio.kill();
-      hud.feed(`You dropped ${bot.name} ${isHead ? '(headshot)' : ''}`, 'good');
+      hud.feed(`You dropped ${killedBot.name} ${killedHead ? '(headshot)' : ''}`, 'good');
       rounds.earn(300);
       checkRoundEnd();
     } else {
@@ -437,12 +456,19 @@ function handleBuyKeys() {
       weapons.select('dmr');
       audio.buy();
     }
+  } else if (input.consume('Digit7') && !weapons.state.owned.shotgun) {
+    if (rounds.spend(SHOTGUN_PRICE)) {
+      weapons.grant('shotgun');
+      weapons.select('shotgun');
+      audio.buy();
+    }
   }
   hud.showBuy(true, money.money, weapons.state.owned, weapons.state.grenades);
 }
 
 function step(dt) {
   elapsed += dt;
+  map.updateWeather(dt);
   const phase = rounds.state.phase;
   if (phase === 'buy' || phase === 'live') {
     if (playerAlive) player.step(dt, input.state.keys);
@@ -481,7 +507,7 @@ function step(dt) {
     if (phase === 'buy' && rounds.state.phase === 'live') {
       buyOpen = false;
       hud.showBuy(false, 0, false, 0);
-      hud.banner(`ROUND ${rounds.state.round}`, 'Plant the charge or drop the shift');
+      hud.banner(`ROUND ${rounds.state.round} — CREW ${rounds.state.score.crew} : ${rounds.state.score.shift} SHIFT`, 'Plant the charge or drop the shift');
     }
     if (phase === 'live' && !rounds.state.bomb.planted && rounds.state.phaseLeft <= 0) {
       rounds.endRound('shift', 'Time expired — the charge was never planted.');
@@ -501,7 +527,7 @@ function step(dt) {
     clearBombMesh();
     if (rounds.state.endWinner === 'crew') audio.roundWin();
     else audio.roundLose();
-    hud.showOverlay('round', { winner: rounds.state.endWinner, reason });
+    hud.showOverlay('round', { winner: rounds.state.endWinner, reason, earned: rounds.state.earned });
     if (document.pointerLockElement) document.exitPointerLock();
   } else if (rounds.state.phase === 'match' && phase !== 'match') {
     if (rounds.state.matchWinner === 'crew') audio.roundWin();
@@ -526,6 +552,7 @@ function step(dt) {
     if (input.consume('Digit1')) weapons.select('pistol');
     if (input.consume('Digit2')) weapons.select('rifle');
     if (input.consume('Digit3')) weapons.select('dmr');
+    if (input.consume('Digit4')) weapons.select('shotgun');
   }
   handleBuyKeys();
 }
@@ -569,6 +596,11 @@ function frame(now) {
     hud.setAmmo(weapons.state.mag[weapons.state.current], weapons.state.reserve[weapons.state.current], def.name.toUpperCase(), weapons.state.grenades);
     hud.setMoney(rounds.state.money);
     const bomb = rounds.state.bomb;
+    hud.setObjective(bomb.planted
+      ? `DEFEND THE CHARGE @ SITE ${bomb.site} — ${Math.ceil(bomb.detonateLeft)}s`
+      : rounds.state.phase === 'buy' ? 'BUY PHASE — SPEND YOUR $ · B TO CLOSE'
+      : rounds.state.phase === 'live' ? 'PLANT THE CHARGE AT A OR B — HOLD E'
+      : 'NEON DOCKS');
     if (bomb.planted) {
       hud.setTimer(bomb.detonateLeft, 'live');
       hud.setBomb(`CHARGE @ SITE ${bomb.site} — DEFUSE ${Math.round(bomb.defuseProgress * 100)}%`);
@@ -654,16 +686,19 @@ function runShot(name) {
     body.position.set(0, 0, 8);
     settle(20);
     const guard = bots.bots.find((bot) => bot.team === 'shift');
-    guard.position.set(1.5, 0, -4);
+    guard.position.set(1.5, 0, 2);
     guard.yaw = Math.PI;
     guard.parts.group.position.copy(guard.position);
     guard.parts.group.rotation.y = guard.yaw;
     settle(6);
-    aimAt(new THREE.Vector3(guard.position.x, 1.2, guard.position.z));
+    // Showcase the v3 shotgun: one close blast at the guard, eight pellets,
+    // then the smoke throw after the kill.
+    weapons.grant('shotgun');
+    weapons.select('shotgun');
+    aimAt(new THREE.Vector3(guard.position.x, 1.3, guard.position.z));
     shoot(0);
     settle(10);
     aimAt(new THREE.Vector3(guard.position.x, 1.55, guard.position.z));
-    shoot(0);
     settle(6);
     // Showcase the smoke grenade: lob one at the west stack, let it pop, then
     // look back at the dropped guard for the frozen frame.
@@ -688,10 +723,12 @@ function runShot(name) {
     guard.parts.group.position.copy(guard.position);
     guard.parts.group.rotation.y = guard.yaw;
     aimAt(new THREE.Vector3(-16, 0.3, -9));
+    // Lightning flash lights the planted site for this frame.
+    map.flashOnce();
     settle(6);
   } else {
     rounds.endRound('crew', 'All five guards are down.');
-    hud.showOverlay('round', { winner: 'crew', reason: 'All five guards are down.' });
+    hud.showOverlay('round', { winner: 'crew', reason: 'All five guards are down.', earned: rounds.state.earned });
     body.position.set(0, 0, 10);
     settle(20);
     aimAt(new THREE.Vector3(0, 1.4, -8));
@@ -702,9 +739,15 @@ function runShot(name) {
   hud.setMoney(rounds.state.money);
   hud.setScore(rounds.state.score.crew, rounds.state.score.shift, rounds.state.round);
   hud.setTimer(rounds.state.bomb.planted ? rounds.state.bomb.detonateLeft : rounds.state.phaseLeft, rounds.state.phase);
-  if (rounds.state.bomb.planted) hud.setBomb('CHARGE @ SITE A');
+  if (rounds.state.bomb.planted) {
+    hud.setBomb('CHARGE @ SITE A');
+    hud.setObjective('DEFEND THE CHARGE @ SITE A — 38s');
+  }
   // Shot mode never runs frame(): draw the minimap and place damage numbers once,
   // or the capture would show a blank map and numbers stuck at the corner.
+  // The camera has never rendered yet, so refresh its matrices first — without
+  // this, project() uses a stale matrixWorldInverse and the numbers land off-screen.
+  scene.updateMatrixWorld(true);
   minimap.draw({
     player: body.position,
     yaw: body.yaw,

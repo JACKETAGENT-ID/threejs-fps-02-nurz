@@ -32,11 +32,16 @@ export function createRounds() {
     endWinner: null,
     matchWinner: null,
     beepTimer: 0,
+    // Earnings this round, for the round-end recap: what the money came from.
+    earned: { kills: 0, plant: 0, round: 0 },
   };
 
   function startRound() {
     state.phase = 'buy';
     state.phaseLeft = BUY_SECONDS;
+    state.earned.kills = 0;
+    state.earned.plant = 0;
+    state.earned.round = 0;
     state.bomb.planted = false;
     state.bomb.site = null;
     state.bomb.plantProgress = 0;
@@ -54,7 +59,9 @@ export function createRounds() {
     state.endWinner = winner;
     state.endReason = reason;
     state.score[winner] += 1;
-    state.money += winner === 'crew' ? WIN_REWARD : LOSS_REWARD;
+    const reward = winner === 'crew' ? WIN_REWARD : LOSS_REWARD;
+    state.money += reward;
+    state.earned.round = reward;
     if (state.score.crew >= WIN_ROUNDS || state.score.shift >= WIN_ROUNDS || state.round >= MAX_ROUNDS) {
       state.phase = 'match';
       state.matchWinner = state.score.crew > state.score.shift ? 'crew' : state.score.shift > state.score.crew ? 'shift' : 'draw';
@@ -77,8 +84,10 @@ export function createRounds() {
       startRound();
     },
     endRound,
-    earn(amount) {
+    earn(amount, kind = 'kills') {
       state.money += amount;
+      if (kind === 'plant') state.earned.plant += amount;
+      else state.earned.kills += amount;
     },
     spend(amount) {
       if (state.money < amount) return false;
@@ -106,7 +115,7 @@ export function createRounds() {
         state.bomb.detonateLeft = DETONATE_SECONDS;
         state.bomb.plantProgress = 0;
         state.bomb.plantSite = null;
-        state.money += PLANT_REWARD;
+        this.earn(PLANT_REWARD, 'plant');
         return true;
       }
       return false;

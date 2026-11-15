@@ -25,6 +25,14 @@ const ROLES = {
 };
 const SHIFT_ROLES = ['rusher', 'holder', 'sniper', 'rusher', 'holder'];
 const CREW_ROLES = ['holder', 'rusher'];
+// Lane pairs push together: VOLT covers JINX on A-long, ORION covers PICO on
+// B-short, SLATE works mid alone. Noise one of a pair hears reaches both.
+const SHIFT_PAIRS = [1, 0, 3, 2, -1];
+// Retake regroup: when the charge is planted the shift guards do not trickle in
+// one by one — they fall back to the north centre (node 16) for up to 5 s, then
+// push the site together. retakeAt resets the moment the bomb is gone.
+let retakeAt = -1;
+const REGROUP_POINT = new THREE.Vector3(0, 0, -12);
 
 function buildBotMesh(scene, team, role) {
   const group = new THREE.Group();
@@ -221,12 +229,15 @@ export function createBots(scene, map) {
   }
 
   function step(dt, env) {
+    if (!env.bomb.planted) retakeAt = -1;
     for (const bot of bots) {
       if (!bot.alive) {
         if (bot.fall < 1) {
           bot.fall = Math.min(1, bot.fall + dt / 0.4);
-          bot.parts.group.rotation.x = -bot.fall * 1.5;
-          bot.parts.group.position.y = -bot.fall * 0.25;
+          // Slump, don't lie flat: a dropped guard stays readable in the
+          // frame (and in a screenshot) instead of vanishing into the asphalt.
+          bot.parts.group.rotation.x = -bot.fall * 0.9;
+          bot.parts.group.position.y = -bot.fall * 0.15;
         }
         continue;
       }
@@ -274,7 +285,11 @@ export function createBots(scene, map) {
       const role = ROLES[bot.role];
       let goal = bot.targetNode;
       if (env.bomb.planted && bot.team === 'shift') {
-        goal = env.bomb.site === 'A' ? 14 : 15;
+        if (retakeAt < 0) retakeAt = env.time;
+        const shiftAlive = bots.filter((other) => other.alive && other.team === 'shift');
+        const allRegrouped = shiftAlive.every((other) => other.position.distanceTo(REGROUP_POINT) < 5);
+        const regroupWindow = env.time - retakeAt < 5;
+        goal = regroupWindow && !allRegrouped ? 16 : (env.bomb.site === 'A' ? 14 : 15);
       } else if (env.bomb.planted && bot.team === 'crew') {
         goal = env.bomb.site === 'A' ? 19 : 20;
       } else if (goal < 0) {
@@ -314,16 +329,28 @@ export function createBots(scene, map) {
   }
 
   function hearNoise(position, time) {
-    for (const bot of bots) {
+    for (let i = 0; i < bots.length; i += 1) {
+      const bot = bots[i];
       if (!bot.alive) continue;
       if (bot.position.distanceTo(position) < 26) {
         bot.suspicion = position.clone();
         bot.suspicionUntil = time + 6;
+        // The lane partner hears it too and pushes the same angle with them.
+        // Shift bots sit at indices 2..6 (two crew bots spawn first).
+        if (bot.team === 'shift') {
+          const partnerShift = SHIFT_PAIRS[i - 2];
+          const partner = partnerShift >= 0 ? bots[2 + partnerShift] : null;
+          if (partner && partner.alive) {
+            partner.suspicion = position.clone();
+            partner.suspicionUntil = time + 6;
+          }
+        }
       }
     }
   }
 
   function reset() {
+    retakeAt = -1;
     for (const bot of bots) {
       scene.remove(bot.parts.group);
     }
